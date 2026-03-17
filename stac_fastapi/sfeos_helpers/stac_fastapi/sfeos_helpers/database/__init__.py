@@ -70,6 +70,7 @@ from .utils import (
     get_bool_env,
     retry_on_connection_error,
     retry_on_datetime_not_found,
+    separate_bulk_conflict_errors,
     validate_refresh,
 )
 
@@ -109,6 +110,7 @@ __all__ = [
     "check_item_exists_in_alias_sync",
     # Errors
     "ItemAlreadyExistsError",
+    "separate_bulk_conflict_errors",
     # Datetime utilities
     "return_date",
     "extract_date",
