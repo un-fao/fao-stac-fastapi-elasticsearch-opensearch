@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Added
+
+- Add private, immutable collection placement and collision-safe physical item IDs as foundations for optional pooled storage. No deployment enables pooling yet; dedicated storage remains the default.
+
 ### Fixed
 
 - Item search returns its results when the optional count times out, without reading the cancelled count task and raising an HTTP 500.

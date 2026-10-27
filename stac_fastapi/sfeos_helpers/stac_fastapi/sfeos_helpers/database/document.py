@@ -4,10 +4,14 @@ This module provides functions for working with documents in Elasticsearch/OpenS
 including document ID generation and bulk action creation.
 """
 
+import hashlib
+import json
 from typing import Any
 
 from stac_fastapi.sfeos_helpers.database.index import index_alias_by_collection_id
 from stac_fastapi.types.stac import Item
+
+from .storage import collection_pool
 
 
 def mk_item_id(item_id: str, collection_id: str) -> str:
@@ -18,8 +22,13 @@ def mk_item_id(item_id: str, collection_id: str) -> str:
         collection_id (str): The id of the Collection that the Item belongs to.
 
     Returns:
-        str: The document id for the Item, combining the Item id and the Collection id, separated by a `|` character.
+        str: A digest of the pair for pooled storage, otherwise the legacy pipe-separated ID.
     """
+    if collection_pool(collection_id):
+        pair = json.dumps(
+            [collection_id, item_id], ensure_ascii=False, separators=(",", ":")
+        )
+        return hashlib.sha256(pair.encode()).hexdigest()
     return f"{item_id}|{collection_id}"
 
 
