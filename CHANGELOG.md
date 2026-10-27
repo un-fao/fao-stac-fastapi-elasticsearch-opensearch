@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- Refresh drained pooled writes before collection deletion, so recent creates and updates are included without stale-version conflicts.
+
 - Preserve explicit index selection for long item-search, count and aggregation requests by sending it in the multi-search body, avoiding unrelated active shards.
 
 - Item search returns its results when the optional count times out, without reading the cancelled count task and raising an HTTP 500.

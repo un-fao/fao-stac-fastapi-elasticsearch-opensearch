@@ -78,6 +78,9 @@ async def delete_pooled_collection(
             and barrier.get("indices") == [{"name": pool.index, "blocked": True}]
         ):
             raise RuntimeError("Pool write barrier was not fully acknowledged")
+        refreshed = await client.indices.refresh(index=pool.index)
+        if refreshed["_shards"]["failed"]:
+            raise RuntimeError("Pool refresh failed after draining writes")
         unblocked = await client.indices.put_settings(
             index=pool.index, body={"index.blocks.write": False}
         )

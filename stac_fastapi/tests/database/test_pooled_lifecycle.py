@@ -2,6 +2,7 @@
 
 import asyncio
 import copy
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import HTTPException
@@ -108,6 +109,48 @@ async def test_pool_deletion_keeps_other_collection_and_blocks_late_writes(place
     assert missing.value.status_code == 404
     assert not await database.client.exists(index=CONTROL_INDEX, id=pool)
     assert not await database.client.exists(index=COLLECTIONS_INDEX, id=collections[0])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("existing", [False, True])
+async def test_pool_deletion_refreshes_drained_writes(placement, existing, monkeypatch):
+    database, pool, (left, right) = placement
+    await database.client.indices.put_settings(
+        index=pool, body={"index.refresh_interval": "-1"}
+    )
+    item = {"id": "recent", "collection": left}
+    await database.bulk_async(right, [{**item, "collection": right}], refresh=True)
+    if existing:
+        await database.bulk_async(left, [item], refresh=True)
+    monkeypatch.setenv("DATABASE_REFRESH", "false")
+    await database.bulk_async(
+        left, [{**item, "title": "Changed"}], op_type="index", refresh=False
+    )
+    await database.delete_collection(left)
+    assert (await database.client.count(index=pool))["count"] == 1
+    assert await database._check_item_exists_in_collection(right, "recent")
+    assert not await database.client.exists(index=CONTROL_INDEX, id=pool)
+    assert not await database.client.exists(index=COLLECTIONS_INDEX, id=left)
+
+
+@pytest.mark.asyncio
+async def test_pool_refresh_failure_keeps_write_barrier(placement, monkeypatch):
+    database, pool, collections = placement
+    monkeypatch.setattr(
+        database.client.indices,
+        "refresh",
+        AsyncMock(return_value={"_shards": {"failed": 1}}),
+    )
+    delete = AsyncMock()
+    monkeypatch.setattr(database.client, "delete_by_query", delete)
+    with pytest.raises(RuntimeError, match="refresh failed"):
+        await database.delete_collection(collections[0])
+    delete.assert_not_awaited()
+    settings = await database.client.indices.get_settings(
+        index=pool, flat_settings=True
+    )
+    assert settings[pool]["settings"]["index.blocks.write"] == "true"
+    assert await database.client.exists(index=CONTROL_INDEX, id=pool)
 
 
 @pytest.mark.asyncio
