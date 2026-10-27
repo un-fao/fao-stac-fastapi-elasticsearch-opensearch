@@ -4,9 +4,9 @@ from copy import deepcopy
 from typing import Any
 from uuid import uuid4
 
-from .storage import collection_pool, storage_alias
+from .storage import STORAGE_NAMESPACE, collection_pool, storage_alias
 
-CONTROL_INDEX = "stac_storage_control"
+CONTROL_INDEX = "stac_storage_control" + STORAGE_NAMESPACE
 
 
 def pool_write_alias(schema: dict) -> str:

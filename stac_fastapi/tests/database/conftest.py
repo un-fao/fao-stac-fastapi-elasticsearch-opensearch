@@ -15,11 +15,12 @@ from stac_fastapi.sfeos_helpers.mappings import (
     ES_ITEMS_SETTINGS,
 )
 
-from ..conftest import DatabaseLogic, create_collection_index
+from ..conftest import DatabaseLogic, create_collection_index, create_index_templates
 
 
 @pytest_asyncio.fixture
 async def placement(tmp_path, monkeypatch, test_collection):
+    await create_index_templates()
     await create_collection_index()
     suffix = uuid.uuid4().hex
     pool = "stac_pool_" + suffix
