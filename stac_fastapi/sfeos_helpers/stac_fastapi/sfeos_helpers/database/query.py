@@ -591,7 +591,7 @@ def decode_search_after_token_shared(
 
 def add_collections_to_body(
     collection_ids: list[str] | None, query: dict[str, Any] | None
-) -> dict[str, Any]:
+) -> dict[str, Any] | None:
     """Add a list of collection ids to the body of a query.
 
     Args:
@@ -608,15 +608,6 @@ def add_collections_to_body(
     if not collection_ids:
         return query
 
-    index_filter = {"terms": {"collection": collection_ids}}
-    if query is None:
-        query = {"query": {}}
-    if "bool" not in query:
-        query["bool"] = {}
-    if "filter" not in query["bool"]:
-        query["bool"]["filter"] = []
-
-    filters = query["bool"]["filter"]
-    if index_filter not in filters:
-        filters.append(index_filter)
-    return query
+    filters = [query] if query else []
+    filters.append({"terms": {"collection": collection_ids}})
+    return {"bool": {"filter": filters}}

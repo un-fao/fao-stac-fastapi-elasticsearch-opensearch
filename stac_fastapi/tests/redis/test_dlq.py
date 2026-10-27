@@ -106,17 +106,24 @@ def _broken_item(collection_id, item_id=None):
 
 
 def test_extract_empty():
-    assert ItemQueueWorker._extract_failed_item_ids([]) == set()
+    assert ItemQueueWorker._extract_failed_item_ids([], {}) == set()
 
 
 def test_extract_delete_op():
-    assert ItemQueueWorker._extract_failed_item_ids([{"delete": {"_id": "x|c"}}]) == {
-        "x"
-    }
+    assert ItemQueueWorker._extract_failed_item_ids(
+        [{"delete": {"_id": "x|c"}}], {"x|c": ("x", "c")}
+    ) == {"x"}
 
 
 def test_extract_missing_id():
-    assert ItemQueueWorker._extract_failed_item_ids([{"index": {}}]) == set()
+    with pytest.raises(KeyError):
+        ItemQueueWorker._extract_failed_item_ids([{"index": {}}], {})
+
+
+def test_extract_opaque_id_preserves_delimiter_item_id():
+    assert ItemQueueWorker._extract_failed_item_ids(
+        [{"create": {"_id": "opaque"}}], {"opaque": ("x|y", "c|d")}
+    ) == {"x|y"}
 
 
 @pytest.mark.asyncio
@@ -173,9 +180,9 @@ async def test_flush_partial_failure(queue_manager, dlq_collection):
     col = dlq_collection["id"]
     db = _make_db()
 
-    good_1 = _valid_item(col)
+    good_1 = _valid_item(col, "a")
     good_2 = _valid_item(col)
-    bad = _broken_item(col)
+    bad = _broken_item(col, "a|b")
 
     items = [good_1, bad, good_2]
     await queue_manager.queue_items(col, items)

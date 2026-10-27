@@ -1084,6 +1084,22 @@ You can customize additional settings in your `.env` file:
 
 ### 6. Database Indexing & Behavior
 
+#### Active item indexes during migration
+
+Set `STAC_FASTAPI_ACTIVE_ITEMS_ALIAS` to an explicit alias such as `stac-active-items`
+to restrict global item searches, queryables and long collection-list fallbacks to
+active storage. Create the alias with the complete active index membership before
+starting the application; startup fails if the configured alias is missing. New
+collection indexes join it automatically. With this variable unset, existing index
+selection is unchanged.
+
+During a placement switch, update the collection alias and active alias membership
+in the same aliases request. Retained source and lab copies must not belong to the
+active alias. Verify full pagination and counts while retained copies are still
+open. The alias controls read membership; migration still requires a write pause,
+content validation and reconciliation before rollback.
+
+
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|
 | `RAISE_ON_BULK_ERROR` | Controls whether bulk insert operations raise exceptions on errors. If set to `true`, the operation will stop and raise an exception when an error occurs. If set to `false`, errors will be logged, and the operation will continue. Malformed `bulk_items` entries (not a JSON object, or without a non-empty string `id`) follow this flag: rejected with `400` when `true`, reported per item in `errors` when `false`. The same applies to `bulk_items` entries whose `collection` differs from the path collection (an absent, `null` or `""` `collection` is filled from the path regardless of this flag) and to `bulk_items` items that fail STAC validation when `ENABLE_STAC_VALIDATOR=true`. **Note:** single Item `POST`/`PUT` validation errors always raise regardless of this flag. ItemCollection validation failures follow this flag when at least one item is written; an ItemCollection with no writable items returns `400` (with `ENABLE_REDIS_QUEUE=true`, `202` and zero items queued), and the `MAX_BATCH_ERROR_SIZE` threshold rejection is unconditional (see [Chunked Validation with Fail-Fast](#chunked-validation-with-fail-fast)). | `false` | Optional |

@@ -5,11 +5,12 @@ from typing import Any, cast
 
 from stac_fastapi.core.utilities import get_bool_env
 from stac_fastapi.sfeos_helpers.database import (
+    active_items_index,
     filter_indexes_by_datetime,
     filter_indexes_by_datetime_range,
     return_date,
 )
-from stac_fastapi.sfeos_helpers.mappings import ITEM_INDICES, ITEMS_ALIAS_PREFIX
+from stac_fastapi.sfeos_helpers.mappings import ITEMS_ALIAS_PREFIX
 
 from ...database import indices
 from .base import BaseIndexSelector
@@ -117,8 +118,7 @@ class DatetimeBasedIndexSelector(BaseIndexSelector):
             all_aliases = await self.alias_loader.get_aliases()
             collections_indexes = list(all_aliases.values())
         else:
-            logger.info(f"Selected indexes: {ITEM_INDICES}")
-            return ITEM_INDICES
+            return active_items_index()
 
         selected_indexes = []
         for collection_indexes in collections_indexes:

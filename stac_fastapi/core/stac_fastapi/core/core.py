@@ -81,6 +81,7 @@ from stac_fastapi.extensions.transaction.request import (
 from stac_fastapi.sfeos_helpers.database import (
     BulkIndexError,
     ItemAlreadyExistsError,
+    bulk_item_id_map,
     separate_bulk_conflict_errors,
 )
 from stac_fastapi.sfeos_helpers.search_engine import DatetimeIndexInserter
@@ -1760,6 +1761,7 @@ class TransactionsClient(AsyncBaseTransactionsClient):
                 raise QueuedSuccess(payload={"message": result, "status": "queued"})
 
         # 5. DATABASE INSERTION LAYER
+        item_ids = bulk_item_id_map(valid_items)
         success, errors = await self.database.bulk_async(
             collection_id=collection_id,
             processed_items=valid_items,
@@ -1773,7 +1775,7 @@ class TransactionsClient(AsyncBaseTransactionsClient):
 
         for error in errors:
             doc_id = next(iter(error.values())).get("_id", "")
-            failed_item_ids.add(doc_id.split("|")[0] if "|" in doc_id else doc_id)
+            failed_item_ids.add(item_ids[doc_id][0])
 
         successfully_added_ids = [
             item.get("id")
@@ -1783,7 +1785,7 @@ class TransactionsClient(AsyncBaseTransactionsClient):
 
         if conflict_errors and raise_on_error:
             doc_id = next(iter(conflict_errors[0].values())).get("_id", "")
-            item_id = doc_id.split("|")[0] if "|" in doc_id else doc_id
+            item_id = item_ids[doc_id][0]
             raise ItemAlreadyExistsError(item_id=item_id, collection_id=collection_id)
 
         if other_errors and raise_on_error:
@@ -1791,7 +1793,7 @@ class TransactionsClient(AsyncBaseTransactionsClient):
 
         # Parse conflicts exactly ONCE and cache the result to avoid redundant generation
         formatted_conflicts = (
-            format_conflict_errors(conflict_errors) if conflict_errors else {}
+            format_conflict_errors(conflict_errors, item_ids) if conflict_errors else {}
         )
 
         # Fix Spot 3: Database writes failed completely
@@ -2635,6 +2637,7 @@ class BulkTransactionsClient(BaseBulkTransactionsClient):
 
         # 4. DATABASE INSERTION LAYER
         collection_id = collection_id or processed_items[0]["collection"]
+        item_ids = bulk_item_id_map(processed_items)
         success, errors = self.database.bulk_sync(
             collection_id,
             processed_items,
@@ -2646,7 +2649,7 @@ class BulkTransactionsClient(BaseBulkTransactionsClient):
 
         if conflict_errors and get_bool_env("RAISE_ON_BULK_ERROR"):
             doc_id = next(iter(conflict_errors[0].values())).get("_id", "")
-            item_id = doc_id.split("|")[0] if "|" in doc_id else doc_id
+            item_id = item_ids[doc_id][0]
             raise ItemAlreadyExistsError(item_id=item_id, collection_id=collection_id)
 
         if other_errors:
@@ -2667,6 +2670,6 @@ class BulkTransactionsClient(BaseBulkTransactionsClient):
                 "received": len(raw_items),
                 "success": success,
                 "skipped": total_skipped,
-                "errors": reported_errors + format_bulk_errors(all_errors),
+                "errors": reported_errors + format_bulk_errors(all_errors, item_ids),
             },
         )

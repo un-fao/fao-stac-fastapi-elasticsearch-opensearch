@@ -26,6 +26,7 @@ from stac_fastapi.core.validate import (
     async_validate_batch_with_stac_validator,
     batch_validate_topology,
 )
+from stac_fastapi.sfeos_helpers.database import bulk_item_id_map
 
 logger = logging.getLogger(__name__)
 
@@ -77,26 +78,11 @@ class ItemQueueWorker:
         return self._states[collection_id]
 
     @staticmethod
-    def _extract_failed_item_ids(errors: list[dict]) -> set[str]:
-        """Extract item IDs from bulk_async error responses.
-
-        Each error dict has the shape:
-            {"<op_type>": {"_id": "item_id|collection_id", ...}}
-        where op_type is one of: index, create, update, delete.
-
-        Returns:
-            Set of failed item IDs.
-        """
-        failed: set[str] = set()
-        for error in errors:
-            for op_type in ("index", "create", "update", "delete"):
-                info = error.get(op_type)
-                if info:
-                    doc_id = info.get("_id", "")
-                    if doc_id:
-                        failed.add(doc_id.split("|")[0])
-                    break
-        return failed
+    def _extract_failed_item_ids(
+        errors: list[dict], item_ids: dict[str, tuple[str, str]]
+    ) -> set[str]:
+        """Resolve failures from this request; unknown IDs must not be acknowledged."""
+        return {item_ids[next(iter(error.values()))["_id"]][0] for error in errors}
 
     async def _should_flush(self, collection_id: str) -> bool:
         """Determine whether a collection's queue should be flushed.
@@ -312,7 +298,9 @@ class ItemQueueWorker:
 
                 # Handle database errors
                 failed_db_ids = (
-                    self._extract_failed_item_ids(errors) if errors else set()
+                    self._extract_failed_item_ids(errors, bulk_item_id_map(valid_items))
+                    if errors
+                    else set()
                 )
                 successful_db_ids = [
                     item["id"]

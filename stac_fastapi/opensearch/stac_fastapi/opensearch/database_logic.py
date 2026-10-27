@@ -36,6 +36,7 @@ from stac_fastapi.opensearch.config import OpensearchSettings as SyncSearchSetti
 from stac_fastapi.sfeos_helpers.database import (
     PARENT_ID_SCRIPT,
     ItemAlreadyExistsError,
+    active_items_index,
     add_bbox_shape_to_collection,
     apply_collections_bbox_filter_shared,
     apply_collections_datetime_filter_shared,
@@ -514,7 +515,11 @@ class DatabaseLogic(BaseDatabaseLogic):
             dict: A dictionary containing the Queryables mappings.
         """
         mappings = await self.client.indices.get_mapping(
-            index=index_alias_by_collection_id(collection_id),
+            index=(
+                active_items_index()
+                if collection_id == "*"
+                else index_alias_by_collection_id(collection_id)
+            ),
         )
         return await get_queryables_mapping_shared(
             collection_id=collection_id, mappings=mappings
@@ -1046,7 +1051,7 @@ class DatabaseLogic(BaseDatabaseLogic):
                 collection_ids, datetime_search
             )
         if len(index_param) > ES_MAX_URL_LENGTH - 300:
-            index_param = ITEM_INDICES
+            index_param = active_items_index()
             query = add_collections_to_body(collection_ids, query)
 
         HIDE_ITEM_PATH = os.getenv("HIDE_ITEM_PATH", None)
@@ -1075,7 +1080,7 @@ class DatabaseLogic(BaseDatabaseLogic):
         )
 
         # Ensure hidden item is not counted
-        count_query = search.to_dict(count=True)
+        count_query = {"query": query} if query else {}
         if HIDE_ITEM_PATH:
             q = count_query.get("query")
             count_query["query"] = add_hidden_filter(q, HIDE_ITEM_PATH)
@@ -1181,6 +1186,9 @@ class DatabaseLogic(BaseDatabaseLogic):
         index_param = await self.async_index_selector.select_indexes(
             collection_ids, datetime_search
         )
+        if len(index_param) > ES_MAX_URL_LENGTH - 300:
+            index_param = active_items_index()
+            search_body["query"] = add_collections_to_body(collection_ids, query)
 
         search_task = asyncio.create_task(
             self.client.search(
@@ -1704,7 +1712,11 @@ class DatabaseLogic(BaseDatabaseLogic):
         Returns:
             dict[str, Any]: The mapping information.
         """
-        index_name = index_alias_by_collection_id(collection_id)
+        index_name = (
+            active_items_index()
+            if collection_id == "*"
+            else index_alias_by_collection_id(collection_id)
+        )
         try:
             mapping = await self.client.indices.get_mapping(
                 index=index_name, params={"allow_no_indices": "false"}
@@ -1719,7 +1731,11 @@ class DatabaseLogic(BaseDatabaseLogic):
     ) -> dict[str, list[str]]:
         """Get the unique values for the given fields in the collection."""
         limit_plus_one = limit + 1
-        index_name = index_alias_by_collection_id(collection_id)
+        index_name = (
+            active_items_index()
+            if collection_id == "*"
+            else index_alias_by_collection_id(collection_id)
+        )
 
         query = await self.client.search(
             index=index_name,
