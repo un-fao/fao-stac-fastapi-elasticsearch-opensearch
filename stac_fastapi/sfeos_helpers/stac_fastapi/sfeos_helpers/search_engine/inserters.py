@@ -13,6 +13,14 @@ from stac_fastapi.sfeos_helpers.database import (
     is_index_closed,
     mk_item_id,
 )
+from stac_fastapi.sfeos_helpers.database.document import mk_actions
+from stac_fastapi.sfeos_helpers.database.pool_schema import (
+    pool_write_alias,
+    read_pool_schema,
+    seed_pool_schema,
+)
+from stac_fastapi.sfeos_helpers.database.storage import collection_pool, storage_routing
+from stac_fastapi.sfeos_helpers.mappings import ES_ITEMS_MAPPINGS
 
 from .base import BaseIndexInserter
 from .index_operations import IndexOperations
@@ -418,3 +426,51 @@ class SimpleIndexInserter(BaseIndexInserter):
             }
             for item in items
         ]
+
+
+class PooledIndexInserter(SimpleIndexInserter):
+    """Attach collection aliases to operator-created pools; other collections stay dedicated."""
+
+    async def create_simple_index(self, client: Any, collection_id: str) -> str:
+        """Create a filtered alias without creating or changing the pool's physical layout."""
+        pool = collection_pool(collection_id)
+        if pool is None:
+            return await super().create_simple_index(client, collection_id)
+        await seed_pool_schema(client, collection_id, ES_ITEMS_MAPPINGS)
+        alias = index_alias_by_collection_id(collection_id)
+        definition = {
+            "filter": {"term": {"collection": collection_id}},
+            "is_write_index": True,
+            **storage_routing(collection_id),
+        }
+        schema = await read_pool_schema(client, collection_id)
+        aliases = [alias, pool_write_alias(schema)]
+        expected = dict(definition)
+        routing = expected.pop("routing", None)
+        if routing:
+            expected.update(index_routing=routing, search_routing=routing)
+        for name in aliases:
+            if await client.indices.exists_alias(name=name):
+                existing = await client.indices.get_alias(name=name)
+                if (
+                    set(existing) != {pool.index}
+                    or existing[pool.index]["aliases"][name] != expected
+                ):
+                    raise RuntimeError(
+                        "Collection alias does not match its storage assignment"
+                    )
+        await client.indices.update_aliases(
+            body={
+                "actions": [
+                    {"add": {"index": pool.index, "alias": name, **definition}}
+                    for name in aliases
+                ]
+            }
+        )
+        return pool.index
+
+    async def prepare_bulk_actions(
+        self, collection_id: str, items: list[dict[str, Any]], op_type: str = "create"
+    ) -> list[dict[str, Any]]:
+        """Use the same physical IDs and alias requirement for async, sync, and queue writes."""
+        return mk_actions(collection_id, items, op_type=op_type)
