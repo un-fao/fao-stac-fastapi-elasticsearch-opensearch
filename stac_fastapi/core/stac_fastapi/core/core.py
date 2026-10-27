@@ -1788,6 +1788,9 @@ class TransactionsClient(AsyncBaseTransactionsClient):
             item_id = item_ids[doc_id][0]
             raise ItemAlreadyExistsError(item_id=item_id, collection_id=collection_id)
 
+        for error in other_errors:
+            detail = next(iter(error.values()))
+            detail["item_id"], detail["collection_id"] = item_ids[detail["_id"]]
         if other_errors and raise_on_error:
             raise BulkIndexError(errors=other_errors, collection_id=collection_id)
 
@@ -1820,6 +1823,7 @@ class TransactionsClient(AsyncBaseTransactionsClient):
                     ),
                     "validation_errors": validation_errors,
                     "conflict_errors": formatted_conflicts,
+                    **({"database_errors": other_errors} if other_errors else {}),
                 },
             )
 
@@ -2652,6 +2656,9 @@ class BulkTransactionsClient(BaseBulkTransactionsClient):
             item_id = item_ids[doc_id][0]
             raise ItemAlreadyExistsError(item_id=item_id, collection_id=collection_id)
 
+        for error in other_errors:
+            detail = next(iter(error.values()))
+            detail["item_id"], detail["collection_id"] = item_ids[detail["_id"]]
         if other_errors:
             logger.error(f"Bulk sync operation encountered errors: {other_errors}")
             if get_bool_env("RAISE_ON_BULK_ERROR"):
