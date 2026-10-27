@@ -12,11 +12,12 @@ import opensearchpy.helpers as helpers
 import orjson
 from fastapi import HTTPException
 from opensearchpy import Q, Search
+from opensearchpy.exceptions import HTTP_EXCEPTIONS
 from opensearchpy.exceptions import ConflictError as OSConflictError
 from opensearchpy.exceptions import ConnectionError as OSConnectionError
 from opensearchpy.exceptions import ConnectionTimeout as OSConnectionTimeout
 from opensearchpy.exceptions import NotFoundError as OSNotFoundError
-from opensearchpy.exceptions import RequestError
+from opensearchpy.exceptions import RequestError, TransportError
 from starlette.requests import Request
 
 import stac_fastapi.sfeos_helpers.filter as filter_module
@@ -80,7 +81,6 @@ from stac_fastapi.sfeos_helpers.database.pool_schema import (
 )
 from stac_fastapi.sfeos_helpers.database.query import (
     ES_MAX_URL_LENGTH,
-    add_collections_to_body,
     format_collection_sort_shared,
 )
 from stac_fastapi.sfeos_helpers.database.storage import (
@@ -1039,6 +1039,39 @@ class DatabaseLogic(BaseDatabaseLogic):
         """
         return populate_sort_shared(sortby=sortby, field_types=field_types)
 
+    async def _search_items(self, index, ignore_unavailable=True, **kwargs):
+        if len(index) <= ES_MAX_URL_LENGTH - 300:
+            return await self.client.search(
+                index=index, ignore_unavailable=ignore_unavailable, **kwargs
+            )
+        # Keep long selections in the body instead of widening shard fan-out.
+        body = kwargs.pop("body", {})
+        body = {
+            **body,
+            **{key: value for key, value in kwargs.items() if value is not None},
+        }
+        header: dict[str, Any] = {"index": index}
+        if ignore_unavailable is not None:
+            header["ignore_unavailable"] = ignore_unavailable
+        response = await self.client.msearch(body=[header, body])
+        result = response["responses"][0]
+        if "error" in result:
+            status = result["status"]
+            raise HTTP_EXCEPTIONS.get(status, TransportError)(
+                status, str(result["error"]), result
+            )
+        return result
+
+    async def _count_items(self, index, ignore_unavailable=True, **kwargs):
+        if len(index) <= ES_MAX_URL_LENGTH - 300:
+            return await self.client.count(
+                index=index, ignore_unavailable=ignore_unavailable, **kwargs
+            )
+        result = await self._search_items(
+            index, ignore_unavailable, size=0, track_total_hits=True, **kwargs
+        )
+        return {"count": result["hits"]["total"]["value"]}
+
     @retry_on_datetime_not_found
     @retry_on_connection_error
     async def execute_search(
@@ -1097,9 +1130,6 @@ class DatabaseLogic(BaseDatabaseLogic):
             index_param = await self.async_index_selector.select_indexes(
                 collection_ids, datetime_search
             )
-        if len(index_param) > ES_MAX_URL_LENGTH - 300:
-            index_param = active_items_index()
-            query = add_collections_to_body(collection_ids, query)
 
         HIDE_ITEM_PATH = os.getenv("HIDE_ITEM_PATH", None)
 
@@ -1118,7 +1148,7 @@ class DatabaseLogic(BaseDatabaseLogic):
         size_limit = min(limit + 1, max_result_window)
 
         search_task = asyncio.create_task(
-            self.client.search(
+            self._search_items(
                 index=index_param,
                 ignore_unavailable=ignore_unavailable,
                 body=search_body,
@@ -1133,7 +1163,7 @@ class DatabaseLogic(BaseDatabaseLogic):
             count_query["query"] = add_hidden_filter(q, HIDE_ITEM_PATH)
 
         count_task = asyncio.create_task(
-            self.client.count(
+            self._count_items(
                 index=index_param,
                 ignore_unavailable=ignore_unavailable,
                 body=count_query,
@@ -1233,12 +1263,9 @@ class DatabaseLogic(BaseDatabaseLogic):
         index_param = await self.async_index_selector.select_indexes(
             collection_ids, datetime_search
         )
-        if len(index_param) > ES_MAX_URL_LENGTH - 300:
-            index_param = active_items_index()
-            search_body["query"] = add_collections_to_body(collection_ids, query)
 
         search_task = asyncio.create_task(
-            self.client.search(
+            self._search_items(
                 index=index_param,
                 ignore_unavailable=ignore_unavailable,
                 body=search_body,

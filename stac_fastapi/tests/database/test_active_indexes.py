@@ -7,7 +7,11 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 import pytest_asyncio
 
-from stac_fastapi.sfeos_helpers.database import active_items_index, indices
+from stac_fastapi.sfeos_helpers.database import (
+    active_items_index,
+    index_alias_by_collection_id,
+    indices,
+)
 from stac_fastapi.sfeos_helpers.database.index import create_index_templates_shared
 from stac_fastapi.sfeos_helpers.search_engine.index_operations import IndexOperations
 
@@ -43,7 +47,11 @@ async def active_storage(monkeypatch):
     names = [prefix + suffix for suffix in ("_one", "_two", "_retained")]
     try:
         for name, collection in zip(names, ("one", "two", "one")):
-            aliases = {active_alias: {}} if name != names[-1] else {}
+            aliases = (
+                {active_alias: {}, index_alias_by_collection_id(collection): {}}
+                if name != names[-1]
+                else {}
+            )
             await database.client.indices.create(
                 index=name,
                 body={
@@ -87,7 +95,7 @@ async def test_search_and_count_exclude_open_retained_copy(active_storage):
     assert {item["id"] for item in items} == set(names[:2])
     assert count == 2
 
-    # WAPOR-sized selection must use the active alias and filter both requests.
+    # A long selection must retain its exact index scope.
     selected = ["one"] + [f"missing-collection-{n}" for n in range(667)]
     items, count, _ = await database.execute_search(
         module.Search(), 10, None, sort, selected, ""
@@ -121,6 +129,7 @@ async def test_search_and_count_exclude_open_retained_copy(active_storage):
         datetime_search="",
     )
     assert result["aggregations"]["total_count"]["value"] == 1
+    assert result["_shards"]["total"] == 1
     assert set(await database.get_items_mapping("*")) == set(names[:2])
 
 
@@ -134,3 +143,92 @@ async def test_new_collection_joins_active_alias(active_storage):
         assert active_alias in aliases[name]["aliases"]
     finally:
         await database.client.indices.delete(index=name)
+
+
+@pytest.mark.asyncio
+async def test_long_selection_pagination_hidden_items_and_count_timeout(
+    active_storage, monkeypatch
+):
+    import asyncio
+
+    database, names, _ = active_storage
+    module = importlib.import_module(DatabaseLogic.__module__)
+    monkeypatch.setattr(module, "ES_MAX_URL_LENGTH", 0)
+    monkeypatch.setenv("HIDE_ITEM_PATH", "hidden")
+    for number in range(6):
+        await database.client.index(
+            index=names[0],
+            id=str(number),
+            refresh=True,
+            body={"id": str(number), "collection": "one", "hidden": number == 5},
+        )
+    token, seen = None, []
+    while True:
+        items, count, token = await database.execute_search(
+            module.Search(), 2, token, {"id": {"order": "asc"}}, ["one"], ""
+        )
+        seen.extend(item["id"] for item in items)
+        assert count == 6
+        assert len(seen) <= 6
+        if token is None:
+            break
+    assert sorted(seen) == sorted([str(number) for number in range(5)] + [names[0]])
+
+    original = database.client.msearch
+    cancelled = asyncio.Event()
+
+    async def delayed_count(*args, **kwargs):
+        if kwargs["body"][1].get("size") == 0:
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(database.client, "msearch", delayed_count)
+    monkeypatch.setenv("COUNT_TIMEOUT", "0.001")
+    items, count, _ = await database.execute_search(
+        module.Search(), 2, None, {"id": {"order": "asc"}}, ["one"], ""
+    )
+    assert len(list(items)) == 2 and count == 6 and cancelled.is_set()
+
+
+@pytest.mark.asyncio
+async def test_long_selection_preserves_engine_errors(active_storage, monkeypatch):
+    from fastapi import HTTPException
+
+    from stac_fastapi.types.errors import NotFoundError
+
+    database, names, _ = active_storage
+    module = importlib.import_module(DatabaseLogic.__module__)
+    monkeypatch.setattr(module, "ES_MAX_URL_LENGTH", 0)
+    with pytest.raises(HTTPException) as caught:
+        await database.execute_search(
+            module.Search(), 2, None, {"unmapped": {"order": "asc"}}, ["one"], ""
+        )
+    assert caught.value.status_code == 400
+    assert "No mapping found" in caught.value.detail
+    with pytest.raises(NotFoundError):
+        await database.execute_search(
+            module.Search(), 2, None, None, ["absent"], "", ignore_unavailable=False
+        )
+
+
+@pytest.mark.asyncio
+async def test_long_selection_preserves_pool_alias_routing(
+    placement, test_item, monkeypatch
+):
+    import copy
+
+    database, pool, (left, right) = placement
+    module = importlib.import_module(DatabaseLogic.__module__)
+    monkeypatch.setattr(module, "ES_MAX_URL_LENGTH", 0)
+    for collection in (left, right):
+        item = copy.deepcopy(test_item)
+        item.update(id="duplicate|id", collection=collection)
+        await database.bulk_async(collection, [item], refresh=True)
+    alias = index_alias_by_collection_id(left)
+    result = await database._search_items(alias, body={"query": {"match_all": {}}})
+    assert result["_shards"]["total"] == 1
+    assert [hit["_source"]["collection"] for hit in result["hits"]["hits"]] == [left]
+    assert (await database._count_items(alias, body={}))["count"] == 1
