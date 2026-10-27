@@ -19,6 +19,7 @@ extra:
 nav:
   - Home: "index.md"
   - Tips and Tricks: tips-and-tricks.md
+  - Pooled Storage: pooled-storage.md
   - API:
       - stac_fastapi.elasticsearch:
           - index: api/stac_fastapi/elasticsearch/index.md

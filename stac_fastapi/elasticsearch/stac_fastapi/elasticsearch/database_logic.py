@@ -80,6 +80,7 @@ from stac_fastapi.sfeos_helpers.database.pool_schema import (
     read_pool_schema_sync,
     record_pool_fields,
     record_pool_fields_sync,
+    scoped_mapping,
 )
 from stac_fastapi.sfeos_helpers.database.query import (
     ES_MAX_URL_LENGTH,
@@ -560,13 +561,14 @@ class DatabaseLogic(BaseDatabaseLogic):
         Returns:
             dict: A dictionary containing the Queryables mappings.
         """
-        mappings = await self.client.indices.get_mapping(
-            index=(
-                active_items_index()
+        if collection_pool(collection_id):
+            mappings = await self.get_items_mapping(collection_id)
+        else:
+            mappings = await self.client.indices.get_mapping(
+                index=active_items_index()
                 if collection_id == "*"
                 else index_alias_by_collection_id(collection_id)
-            ),
-        )
+            )
         return await get_queryables_mapping_shared(
             collection_id=collection_id, mappings=mappings
         )
@@ -1815,7 +1817,9 @@ class DatabaseLogic(BaseDatabaseLogic):
             mapping = await self.client.indices.get_mapping(
                 index=index_name, allow_no_indices=False
             )
-            return mapping.body
+            mapping = mapping.body
+            schema = await read_pool_schema(self.client, collection_id)
+            return scoped_mapping(mapping, schema["fields"]) if schema else mapping
         except ESNotFoundError:
             raise NotFoundError(f"Mapping for index {index_name} not found")
 
