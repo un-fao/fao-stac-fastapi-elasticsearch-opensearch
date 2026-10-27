@@ -12,6 +12,13 @@ from typing import Mapping
 
 from stac_fastapi.core.utilities import get_bool_env
 from stac_fastapi.sfeos_helpers.database.index import active_items_index
+from stac_fastapi.sfeos_helpers.mappings import ITEMS_ALIAS_PREFIX
+
+STORAGE_NAMESPACE = (
+    ""
+    if ITEMS_ALIAS_PREFIX == "items_"
+    else "_" + hashlib.sha256(ITEMS_ALIAS_PREFIX.encode()).hexdigest()
+)
 
 
 @dataclass(frozen=True)
@@ -107,7 +114,12 @@ def storage_routing(collection_id: str) -> dict[str, str]:
 
 def storage_alias(collection_id: str) -> str:
     """Keep distinct public collection IDs distinct after index-name normalization."""
-    return "stac_collection_" + hashlib.sha256(collection_id.encode()).hexdigest()
+    return (
+        "stac_collection"
+        + STORAGE_NAMESPACE
+        + "_"
+        + hashlib.sha256(collection_id.encode()).hexdigest()
+    )
 
 
 def pooled_write_options(collection_id: str) -> dict[str, bool]:

@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- Namespace pooled aliases and control records by the configured item-alias prefix so isolated deployments can reuse public collection IDs. Default names remain compatible.
+
 - Refresh drained pooled writes before collection deletion, so recent creates and updates are included without stale-version conflicts.
 
 - Preserve explicit index selection for long item-search, count and aggregation requests by sending it in the multi-search body, avoiding unrelated active shards.
