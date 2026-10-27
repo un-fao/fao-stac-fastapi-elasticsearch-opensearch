@@ -3,10 +3,11 @@
 from typing import Any
 
 from stac_fastapi.core.utilities import get_bool_env
+from stac_fastapi.sfeos_helpers.database.storage import storage_manifest
 
 from .base import BaseIndexInserter
 from .index_operations import IndexOperations
-from .inserters import DatetimeIndexInserter, SimpleIndexInserter
+from .inserters import DatetimeIndexInserter, PooledIndexInserter, SimpleIndexInserter
 
 
 class IndexInsertionFactory:
@@ -30,6 +31,8 @@ class IndexInsertionFactory:
             "ENABLE_DATETIME_INDEX_FILTERING", default="false"
         )
 
+        if storage_manifest() is not None:
+            return PooledIndexInserter(index_operations, client)
         if use_datetime_partitioning:
             return DatetimeIndexInserter(client, index_operations)
         else:
