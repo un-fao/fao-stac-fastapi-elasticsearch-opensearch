@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Added
 
+- Route pooled item CRUD and synchronous/asynchronous bulk writes through generation-specific aliases, with conditional-write checks and field tracking based on successful writes.
+
 - Attach routed collection aliases to operator-created pools and retain collection-specific field registries for scoped queryables. Pooled CRUD and lifecycle integration follow separately.
 
 - Add private, immutable collection placement and collision-safe physical item IDs as foundations for optional pooled storage. No deployment enables pooling yet; dedicated storage remains the default.

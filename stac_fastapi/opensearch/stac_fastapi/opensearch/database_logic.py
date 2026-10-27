@@ -69,10 +69,21 @@ from stac_fastapi.sfeos_helpers.database.catalogs import (
     decode_token_to_search_after,
     encode_search_after_to_token,
 )
+from stac_fastapi.sfeos_helpers.database.pool_schema import (
+    pool_write_alias,
+    read_pool_schema,
+    read_pool_schema_sync,
+    record_pool_fields,
+    record_pool_fields_sync,
+)
 from stac_fastapi.sfeos_helpers.database.query import (
     ES_MAX_URL_LENGTH,
     add_collections_to_body,
     format_collection_sort_shared,
+)
+from stac_fastapi.sfeos_helpers.database.storage import (
+    collection_pool,
+    pooled_write_options,
 )
 from stac_fastapi.sfeos_helpers.database.utils import (
     add_hidden_filter,
@@ -443,6 +454,23 @@ class DatabaseLogic(BaseDatabaseLogic):
         Raises:
             NotFoundError: If the specified Item does not exist in the Collection.
         """
+        if collection_pool(collection_id):
+            try:
+                hit = await self.client.get(
+                    index=index_alias_by_collection_id(collection_id),
+                    id=mk_item_id(item_id, collection_id),
+                )
+            except self.not_found_error_class:
+                hit = None
+            if hit is None or (
+                not include_hidden
+                and is_hidden(hit["_source"], os.getenv("HIDE_ITEM_PATH"))
+            ):
+                raise NotFoundError(
+                    f"Item {item_id} does not exist inside Collection {collection_id}"
+                )
+            return hit["_source"], DocumentVersion.from_hit(hit)
+
         if isinstance(self.async_index_inserter, DatetimeIndexInserter):
             # A real-time mget over the alias's concrete indexes, so a document
             # written a moment ago is found before the next refresh, and the
@@ -1239,6 +1267,8 @@ class DatabaseLogic(BaseDatabaseLogic):
         alias = index_alias_by_collection_id(collection_id)
         doc_id = mk_item_id(item_id, collection_id)
         try:
+            if collection_pool(collection_id):
+                return await self.client.exists(index=alias, id=doc_id)
             return await check_item_exists_in_alias(self.client, alias, doc_id)
         except Exception:
             return False
@@ -1258,6 +1288,8 @@ class DatabaseLogic(BaseDatabaseLogic):
         alias = index_alias_by_collection_id(collection_id)
         doc_id = mk_item_id(item_id, collection_id)
         try:
+            if collection_pool(collection_id):
+                return self.sync_client.exists(index=alias, id=doc_id)
             return check_item_exists_in_alias_sync(self.sync_client, alias, doc_id)
         except Exception:
             return False
@@ -1460,6 +1492,21 @@ class DatabaseLogic(BaseDatabaseLogic):
             # between this check and the write still can; the write then gets
             # 409 (no such document), which becomes 412.
             raise precondition_failed(f"Item {item_id}")
+        pool = collection_pool(collection_id)
+        if pool:
+            if version and (
+                version.index != pool.index
+                or not await index_behind_alias(
+                    self.client,
+                    index_alias_by_collection_id(collection_id),
+                    version.index,
+                )
+            ):
+                raise precondition_failed(f"Item {item_id}")
+            target_index = index_alias_by_collection_id(collection_id)
+        schema = await read_pool_schema(self.client, collection_id)
+        if schema:
+            target_index = pool_write_alias(schema)
         # Index the item in the database
         try:
             response = await self.client.index(
@@ -1468,12 +1515,14 @@ class DatabaseLogic(BaseDatabaseLogic):
                 body=item,
                 refresh=refresh,
                 **({} if upsert else {"op_type": "create"}),
+                **pooled_write_options(collection_id),
                 **(version.write_kwargs() if version else {}),
             )
         except OSConflictError:
             if version:
                 raise precondition_failed(f"Item {item_id}")
             raise ItemAlreadyExistsError(item_id, collection_id)
+        await record_pool_fields(self.client, schema, [item])
         return DocumentVersion.from_hit(response)
 
     @retry_on_connection_error
@@ -1533,6 +1582,7 @@ class DatabaseLogic(BaseDatabaseLogic):
         Returns:
             patched item.
         """
+        schema = await read_pool_schema(self.client, collection_id)
         new_item_id = None
         new_collection_id = None
         script_operations = []
@@ -1553,7 +1603,9 @@ class DatabaseLogic(BaseDatabaseLogic):
                 script_operations.append(operation)
 
         try:
-            if isinstance(self.async_index_inserter, DatetimeIndexInserter):
+            if collection_pool(collection_id) or isinstance(
+                self.async_index_inserter, DatetimeIndexInserter
+            ):
                 # Real-time mget over the alias's concrete indexes so a patch
                 # on a document that has not been refreshed yet still finds it.
                 hit = await self.get_item_hit_for_write(collection_id, item_id)
@@ -1595,10 +1647,11 @@ class DatabaseLogic(BaseDatabaseLogic):
                     raise precondition_failed(f"Item {item_id}")
                 try:
                     await self.client.update(
-                        index=document_index,
+                        index=pool_write_alias(schema) if schema else document_index,
                         id=mk_item_id(item_id, collection_id),
                         body={"script": script},
                         refresh=True,
+                        **pooled_write_options(collection_id),
                         **(version.write_kwargs() if version else {}),
                     )
                 except OSNotFoundError:
@@ -1621,6 +1674,7 @@ class DatabaseLogic(BaseDatabaseLogic):
             ) from exc
 
         item = await self.get_item_for_write(collection_id, item_id)
+        await record_pool_fields(self.client, schema, [item])
 
         if new_collection_id:
             item["collection"] = new_collection_id
@@ -1680,6 +1734,24 @@ class DatabaseLogic(BaseDatabaseLogic):
             f"Deleting item {item_id} from collection {collection_id} with refresh={refresh}"
         )
 
+        schema = await read_pool_schema(self.client, collection_id)
+        if schema:
+            hit = await self.get_item_hit_for_write(collection_id, item_id)
+            current = DocumentVersion.from_hit(hit)
+            if version and current.etag != version.etag:
+                raise precondition_failed(f"Item {item_id}")
+            try:
+                await self.client.delete(
+                    index=pool_write_alias(schema),
+                    id=mk_item_id(item_id, collection_id),
+                    refresh=refresh,
+                    **current.write_kwargs(),
+                )
+            except (OSConflictError, OSNotFoundError):
+                if version:
+                    raise precondition_failed(f"Item {item_id}")
+                raise
+            return
         if version is not None:
             try:
                 await self.client.delete(
@@ -2336,20 +2408,31 @@ class DatabaseLogic(BaseDatabaseLogic):
                     new_items.append(item)
             processed_items = new_items
 
+        schema = await read_pool_schema(self.client, collection_id)
         if processed_items:
             actions = await self.async_index_inserter.prepare_bulk_actions(
                 collection_id, processed_items, op_type=op_type
             )
 
-            success, errors = await helpers.async_bulk(
-                self.client,
-                actions,
-                refresh=refresh,
-                raise_on_error=raise_on_error,
-            )
+            if schema:
+                for action in actions:
+                    action["_index"] = pool_write_alias(schema)
+            try:
+                success, errors = await helpers.async_bulk(
+                    self.client,
+                    actions,
+                    refresh=refresh,
+                    raise_on_error=raise_on_error,
+                    **pooled_write_options(collection_id),
+                )
+            except helpers.BulkIndexError:
+                await record_pool_fields(self.client, schema, processed_items, True)
+                raise
         else:
             success, errors = 0, []
 
+        if success:
+            await record_pool_fields(self.client, schema, processed_items, bool(errors))
         errors.extend(preexisting_conflicts)
 
         # Log the result
@@ -2417,12 +2500,26 @@ class DatabaseLogic(BaseDatabaseLogic):
             raise_on_error = False
         else:
             raise_on_error = self.sync_settings.raise_on_bulk_error
-        success, errors = helpers.bulk(
-            self.sync_client,
-            mk_actions(collection_id, processed_items, op_type=op_type),
-            refresh=refresh,
-            raise_on_error=raise_on_error,
-        )
+        schema = read_pool_schema_sync(self.sync_client, collection_id)
+        actions = mk_actions(collection_id, processed_items, op_type=op_type)
+        if schema:
+            for action in actions:
+                action["_index"] = pool_write_alias(schema)
+        try:
+            success, errors = helpers.bulk(
+                self.sync_client,
+                actions,
+                refresh=refresh,
+                raise_on_error=raise_on_error,
+                **pooled_write_options(collection_id),
+            )
+        except helpers.BulkIndexError:
+            record_pool_fields_sync(self.sync_client, schema, processed_items, True)
+            raise
+        if success:
+            record_pool_fields_sync(
+                self.sync_client, schema, processed_items, bool(errors)
+            )
         return success, errors
 
     # DANGER
