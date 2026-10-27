@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Added
 
+- Scope pooled queryables to each collection and reject incomplete placement, aliases or pending recovery at startup. Public catalog membership and metadata edits cannot change physical placement.
+
 - Coordinate pooled collection creation/deletion with private reservations, generation aliases and a write barrier. Deletion removes only the selected collection; failures retain recovery state instead of reusing its ID.
 
 - Route pooled item CRUD and synchronous/asynchronous bulk writes through generation-specific aliases, with conditional-write checks and field tracking based on successful writes.

@@ -38,7 +38,6 @@ def index_by_collection_id(collection_id: str) -> str:
     return f"{ITEMS_INDEX_PREFIX}{cleaned.lower()}_{hashed}"
 
 
-@lru_cache(256)
 def index_alias_by_collection_id(collection_id: str) -> str:
     """
     Translate a collection id into an Elasticsearch index alias.
@@ -297,7 +296,14 @@ async def create_index_templates_shared(settings: Any) -> None:
         These templates ensure that any new indices created with matching patterns
         will automatically have the correct structure.
     """
+    from .pool_startup import validate_pool_storage
+
     client = settings.create_client
+    try:
+        await validate_pool_storage(client)
+    except Exception:
+        await client.close()
+        raise
     active_alias = active_items_index()
     if active_alias != ITEM_INDICES and not await client.indices.exists_alias(
         name=active_alias
