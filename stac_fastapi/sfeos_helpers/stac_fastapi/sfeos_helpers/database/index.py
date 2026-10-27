@@ -49,6 +49,10 @@ def index_alias_by_collection_id(collection_id: str) -> str:
     Returns:
         str: The index alias derived from the collection id.
     """
+    from .storage import collection_pool, storage_alias
+
+    if collection_id != "*" and collection_pool(collection_id):
+        return storage_alias(collection_id)
     cleaned = (
         "*"
         if collection_id == "*"
