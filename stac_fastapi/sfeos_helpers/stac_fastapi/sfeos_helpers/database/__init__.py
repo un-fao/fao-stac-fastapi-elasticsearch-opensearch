@@ -45,7 +45,7 @@ from .datetime import (
     is_index_closed,
     return_date,
 )
-from .document import mk_actions, mk_item_id
+from .document import bulk_item_id_map, mk_actions, mk_item_id
 from .index import (
     create_index_templates_shared,
     delete_item_index_shared,
@@ -111,6 +111,7 @@ __all__ = [
     # Mapping operations
     "get_queryables_mapping_shared",
     # Document operations
+    "bulk_item_id_map",
     "mk_item_id",
     "mk_actions",
     # Utility functions

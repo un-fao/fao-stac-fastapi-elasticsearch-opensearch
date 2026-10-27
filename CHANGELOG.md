@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- Bulk responses and queue failure handling preserve item and collection IDs containing `|`. Failed items are excluded from successful-write lists using the submitted item identities.
+
 ## [v8.0.0] - 2026-10-23
 
 ### Added
