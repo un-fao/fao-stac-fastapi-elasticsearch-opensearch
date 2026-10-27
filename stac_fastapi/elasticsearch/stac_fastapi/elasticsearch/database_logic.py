@@ -73,6 +73,7 @@ from stac_fastapi.sfeos_helpers.database.catalogs import (
     decode_token_to_search_after,
     encode_search_after_to_token,
 )
+from stac_fastapi.sfeos_helpers.database.pool_deletion import delete_pooled_collection
 from stac_fastapi.sfeos_helpers.database.pool_schema import (
     pool_write_alias,
     read_pool_schema,
@@ -353,7 +354,23 @@ class DatabaseLogic(BaseDatabaseLogic):
 
         # Exclude Catalogs to prevent them from appearing in the collections endpoint,
         # without strictly requiring "type": "Collection" to support legacy data.
-        query_parts.append({"bool": {"must_not": [{"term": {"type": "Catalog"}}]}})
+        query_parts.append(
+            {
+                "bool": {
+                    "must_not": [
+                        {
+                            "terms": {
+                                "type": [
+                                    "Catalog",
+                                    "CreatingCollection",
+                                    "DeletingCollection",
+                                ]
+                            }
+                        }
+                    ]
+                }
+            }
+        )
 
         # Combine all query parts with AND logic
         if query_parts:
@@ -1877,12 +1894,15 @@ class DatabaseLogic(BaseDatabaseLogic):
             # Convert bbox to bbox_shape for geospatial queries (ES/OS specific)
             add_bbox_shape_to_collection(collection)
 
+        pooled = collection_pool(collection_id) is not None
         # Index the collection in the database
         try:
             response = await self.client.index(
                 index=COLLECTIONS_INDEX,
                 id=collection_id,
-                document=collection,
+                document={**collection, "type": "CreatingCollection"}
+                if pooled
+                else collection,
                 refresh=refresh,
                 op_type="create",
             )
@@ -1897,6 +1917,15 @@ class DatabaseLogic(BaseDatabaseLogic):
         if self.async_index_inserter.should_create_collection_index():
             await self.async_index_inserter.create_simple_index(
                 self.client, collection_id
+            )
+        if pooled:
+            response = await self.client.index(
+                index=COLLECTIONS_INDEX,
+                id=collection_id,
+                document=collection,
+                if_seq_no=response["_seq_no"],
+                if_primary_term=response["_primary_term"],
+                refresh=refresh,
             )
         return DocumentVersion.from_hit(response)
 
@@ -2010,6 +2039,10 @@ class DatabaseLogic(BaseDatabaseLogic):
 
         # Handle collection ID change
         if collection_id != collection_dict.get("id"):
+            if collection_pool(collection_id) or collection_pool(
+                collection_dict.get("id")
+            ):
+                raise ValueError("A pooled collection cannot be renamed")
             if version is not None:
                 # A create, a reindex and a delete: no one conditional write covers
                 # it. No route renames (PUT and PATCH refuse an id change).
@@ -2048,6 +2081,8 @@ class DatabaseLogic(BaseDatabaseLogic):
                 # Convert bbox to bbox_shape for geospatial queries (ES/OS specific)
                 add_bbox_shape_to_collection(collection_dict)
 
+            if collection_pool(collection_id):
+                preserve_parent_ids = True
             if not preserve_parent_ids:
                 if version is not None and not await index_behind_alias(
                     self.client, COLLECTIONS_INDEX, version.index
@@ -2223,6 +2258,11 @@ class DatabaseLogic(BaseDatabaseLogic):
                 script_operations.append(operation)
 
         script = operations_to_script(script_operations, create_nest=create_nest)
+        if collection_pool(collection_id):
+            script["source"] = (
+                "if (ctx._source.type != 'Collection') { ctx.op = 'none'; return; } "
+                + script["source"]
+            )
 
         if version is not None and not await index_behind_alias(
             self.client, COLLECTIONS_INDEX, version.index
@@ -2288,6 +2328,11 @@ class DatabaseLogic(BaseDatabaseLogic):
             deletes the collection. If `refresh` is set to "true", "false", or "wait_for", the index is refreshed accordingly after
             the deletion. Additionally, this function also calls `delete_item_index` to delete the index for the items in the collection.
         """
+        if collection_pool(collection_id):
+            await delete_pooled_collection(self.client, collection_id, version)
+            await self.async_index_inserter.refresh_cache()
+            return
+
         # Ensure kwargs is a dictionary
         kwargs = kwargs or {}
 

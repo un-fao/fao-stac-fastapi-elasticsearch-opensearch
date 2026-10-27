@@ -257,7 +257,14 @@ async def search_children_with_pagination_shared(
 
     size = min(limit + 1, MAX_LIMIT)
     body = {
-        "query": {"bool": {"filter": filter_queries}},
+        "query": {
+            "bool": {
+                "filter": filter_queries,
+                "must_not": [
+                    {"terms": {"type": ["CreatingCollection", "DeletingCollection"]}}
+                ],
+            }
+        },
         "sort": [{"id": {"order": "asc"}}],
         "size": size,
         "track_total_hits": True,
