@@ -4,11 +4,15 @@ import uuid
 from typing import Any, Dict, List, Literal
 
 from stac_fastapi.core.utilities import get_bool_env
-from stac_fastapi.sfeos_helpers.database import index_alias_by_collection_id
+from stac_fastapi.sfeos_helpers.database import (
+    active_items_index,
+    index_alias_by_collection_id,
+)
 from stac_fastapi.sfeos_helpers.mappings import (
     _ES_INDEX_NAME_UNSUPPORTED_CHARS_TABLE,
     ES_ITEMS_MAPPINGS,
     ES_ITEMS_SETTINGS,
+    ITEM_INDICES,
     ITEMS_ALIAS_PREFIX,
     ITEMS_INDEX_PREFIX,
 )
@@ -206,6 +210,9 @@ class IndexOperations:
         Returns:
             Dict[str, Any]: Index body configuration.
         """
+        active_alias = active_items_index()
+        if active_alias != ITEM_INDICES:
+            aliases = {**aliases, active_alias: {}}
         return {
             "aliases": aliases,
             "mappings": ES_ITEMS_MAPPINGS,

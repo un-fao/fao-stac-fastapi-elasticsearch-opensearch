@@ -47,6 +47,7 @@ from .datetime import (
 )
 from .document import bulk_item_id_map, mk_actions, mk_item_id
 from .index import (
+    active_items_index,
     create_index_templates_shared,
     delete_item_index_shared,
     filter_indexes_by_datetime,
@@ -91,6 +92,7 @@ __all__ = [
     "search_sub_catalogs_with_pagination_shared",
     "search_children_with_pagination_shared",
     # Index operations
+    "active_items_index",
     "create_index_templates_shared",
     "delete_item_index_shared",
     "index_behind_alias",

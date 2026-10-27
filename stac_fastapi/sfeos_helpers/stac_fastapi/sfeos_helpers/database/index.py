@@ -4,6 +4,7 @@ This module provides functions for creating and managing indices in Elasticsearc
 """
 
 import hashlib
+import os
 import re
 from datetime import datetime
 from functools import lru_cache
@@ -56,6 +57,16 @@ def index_alias_by_collection_id(collection_id: str) -> str:
     return f"{ITEMS_ALIAS_PREFIX}{cleaned}"
 
 
+def active_items_index() -> str:
+    """Use an operator-managed active alias when configured, never a wildcard fallback."""
+    alias = os.getenv("STAC_FASTAPI_ACTIVE_ITEMS_ALIAS")
+    if alias is None:
+        return ITEM_INDICES
+    if not re.fullmatch(r"[a-z0-9][a-z0-9._-]*", alias) or len(alias.encode()) > 255:
+        raise ValueError("STAC_FASTAPI_ACTIVE_ITEMS_ALIAS must be one explicit alias")
+    return alias
+
+
 def indices(collection_ids: list[str] | None) -> str:
     """
     Get a comma-separated string of index names for a given list of collection ids.
@@ -69,7 +80,7 @@ def indices(collection_ids: list[str] | None) -> str:
     return (
         ",".join(map(index_alias_by_collection_id, collection_ids))
         if collection_ids
-        else ITEM_INDICES
+        else active_items_index()
     )
 
 
@@ -283,6 +294,12 @@ async def create_index_templates_shared(settings: Any) -> None:
         will automatically have the correct structure.
     """
     client = settings.create_client
+    active_alias = active_items_index()
+    if active_alias != ITEM_INDICES and not await client.indices.exists_alias(
+        name=active_alias
+    ):
+        await client.close()
+        raise RuntimeError("Configured active items alias does not exist")
     await client.indices.put_index_template(
         name=f"template_{COLLECTIONS_INDEX}",
         body={
