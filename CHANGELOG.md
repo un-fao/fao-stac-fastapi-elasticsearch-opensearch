@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- Preserve explicit index selection for long item-search, count and aggregation requests by sending it in the multi-search body, avoiding unrelated active shards.
+
 - Item search returns its results when the optional count times out, without reading the cancelled count task and raising an HTTP 500.
 
 - Add an opt-in active items alias to exclude retained copies from global searches, queryables and long collection-list fallbacks; keep search and count scopes aligned.
