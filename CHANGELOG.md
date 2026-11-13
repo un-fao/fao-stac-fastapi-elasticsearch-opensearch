@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Changed
+
+- Shared mode accepts canonical collection IDs containing colons and uses a SHA-256 hash of the original ID for each internal collection alias. Public IDs stay unchanged. Existing shared deployments must [replace their collection aliases](README.md#migrating) before using this naming scheme; the FAO review upgrade resets its STAC storage first.
+- Deleting a colon-containing collection in simple or datetime mode returns `409` while a physical shared items index exists. Retry the deletion in shared mode so its items are cleaned up before its metadata is removed.
+
 ### Added
 
 - `ITEMS_INDEX_STRATEGY` (`simple` or `datetime`) selects how item indexes are laid out. `datetime` replaces `ENABLE_DATETIME_INDEX_FILTERING=true`. If both variables are set and disagree, the API fails at startup, so Helm values overrides that still set `ENABLE_DATETIME_INDEX_FILTERING` must switch to `ITEMS_INDEX_STRATEGY`; the chart's example values files already do. [#1008](https://github.com/stac-utils/stac-fastapi-elasticsearch-opensearch/issues/1008)
@@ -19,6 +24,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- Bulk errors retain the original Item and Collection IDs, including IDs containing `|`. A FeatureCollection whose database writes all fail includes `database_errors` in its `400` response.
 - Creating a collection no longer leaves the collection behind when creating its items index fails (for example on a client timeout), which made a retried create return `409`. [#1008](https://github.com/stac-utils/stac-fastapi-elasticsearch-opensearch/issues/1008)
 - With `ENABLE_STAC_VALIDATOR=false`, a JSON Patch that uses the append index `-` on a non-empty list with any operation except `add`, or as a `from` path (for example `remove /links/-`), now fails with `- does not exist in links` instead of an out-of-bounds runtime error. `-` in the middle of a path through a list (for example `/links/-/href`) now fails with `- in links/-/href does not exist` for every operation instead of `dynamic method [java.util.ArrayList, containsKey/1] not found`. The same check now applies to any member of a value that is not an object: in the middle of a path for every operation (for example `/links/title/x` or `/links/-1/x`), and as the last segment for `test`, `replace`, `remove` and `from` paths (for example `remove /links/foo` or `remove /properties/datetime/x`). These used to fail with the same `dynamic method … not found` error and now report `does not exist`. The status code stays `400`, and on an object `-` is still a member name. [#999](https://github.com/stac-utils/stac-fastapi-elasticsearch-opensearch/issues/999)
 
