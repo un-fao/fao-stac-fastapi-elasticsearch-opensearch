@@ -641,24 +641,27 @@ class DatabaseLogic(BaseDatabaseLogic):
                     f"Mapping for index {alias} not found"
                 )
 
-        async def parse_mapping_safely(
-            indices: tuple[str, ...], cids: list[str]
-        ) -> tuple | None:
-            # An alias over many datetime partitions is shorter than their names.
-            index = indices[0] if len(indices) == 1 else aliases[cids[0]]
+        async def parse_mapping_safely(cids: list[str]) -> tuple | None:
+            # Read through an alias: credentials may grant metadata access on
+            # aliases only, and an alias is shorter than many partition names.
             async with sem:
-                try:
-                    mapping = (await self.client.indices.get_mapping(index=index)).body
-                    return filters_client.queryables_from_mapping(mapping)
-                except Exception as e:
-                    logger.warning(f"Failed to retrieve mapping for {index}: {e}")
-                    return None
+                for cid in cids:
+                    index = aliases[cid]
+                    try:
+                        mapping = (
+                            await self.client.indices.get_mapping(index=index)
+                        ).body
+                        return filters_client.queryables_from_mapping(mapping)
+                    except ESNotFoundError:
+                        # Its collection was deleted after the aliases resolved.
+                        continue
+                    except Exception as e:
+                        logger.warning(f"Failed to retrieve mapping for {index}: {e}")
+                        return None
+            return None
 
         parsed_mappings = await asyncio.gather(
-            *[
-                parse_mapping_safely(indices, cids)
-                for indices, cids in collections_by_indices.items()
-            ]
+            *[parse_mapping_safely(cids) for cids in collections_by_indices.values()]
         )
         parsed_by_collection = {
             cid: parsed
