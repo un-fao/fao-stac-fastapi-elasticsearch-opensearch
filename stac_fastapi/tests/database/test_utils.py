@@ -8,6 +8,7 @@ import pytest
 from stac_fastapi.sfeos_helpers.database import (
     check_item_exists_in_alias,
     check_item_exists_in_alias_sync,
+    find_item_indexes_in_alias,
     index_alias_by_collection_id,
     mk_item_id,
 )
@@ -151,3 +152,24 @@ async def test_check_item_exists_with_different_datetime(
     assert (
         check_item_exists_in_alias_sync(database.sync_client, alias, doc_id_2) is True
     )
+
+
+@pytest.mark.asyncio
+async def test_find_item_indexes_in_alias_raises_when_an_index_lookup_fails():
+    class _Indices:
+        async def get_alias(self, name):
+            return {"items-a": {}, "items-b": {}}
+
+    class _Client:
+        indices = _Indices()
+
+        async def mget(self, body):
+            return {
+                "docs": [
+                    {"_index": "items-a", "_id": "x", "found": True},
+                    {"_index": "items-b", "_id": "x", "error": {"type": "shard_error"}},
+                ]
+            }
+
+    with pytest.raises(RuntimeError, match="items-b"):
+        await find_item_indexes_in_alias(_Client(), "alias", "x")
