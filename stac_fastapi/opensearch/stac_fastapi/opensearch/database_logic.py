@@ -13,6 +13,7 @@ import opensearchpy.helpers as helpers
 import orjson
 from fastapi import HTTPException
 from opensearchpy import Q, Search
+from opensearchpy.exceptions import AuthorizationException as OSAuthorizationException
 from opensearchpy.exceptions import ConflictError as OSConflictError
 from opensearchpy.exceptions import ConnectionError as OSConnectionError
 from opensearchpy.exceptions import ConnectionTimeout as OSConnectionTimeout
@@ -623,18 +624,44 @@ class DatabaseLogic(BaseDatabaseLogic):
                     f"Mapping for index {alias} not found"
                 )
 
+        async def read_mapping(index: str) -> tuple:
+            mapping = await self.client.indices.get_mapping(index=index)
+            return filters_client.queryables_from_mapping(mapping)
+
         async def parse_mapping_safely(
             indices: tuple[str, ...], cids: list[str]
         ) -> tuple | None:
-            # An alias over many datetime partitions is shorter than their names.
-            index = indices[0] if len(indices) == 1 else aliases[cids[0]]
+            # Read through an alias first: credentials may grant metadata access
+            # on aliases only, and an alias is shorter than many partition names.
+            # Grants can differ per alias, so a denial tries one sibling and then
+            # a single backing index by name, as before.
             async with sem:
-                try:
-                    mapping = await self.client.indices.get_mapping(index=index)
-                    return filters_client.queryables_from_mapping(mapping)
-                except Exception as e:
-                    logger.warning(f"Failed to retrieve mapping for {index}: {e}")
-                    return None
+                denied = 0
+                for cid in cids:
+                    index = aliases[cid]
+                    try:
+                        return await read_mapping(index)
+                    except OSNotFoundError:
+                        # Its collection was deleted after the aliases resolved.
+                        continue
+                    except OSAuthorizationException as e:
+                        logger.warning(
+                            f"Not allowed to read the mapping of {index}: {e}"
+                        )
+                        denied += 1
+                        if denied == 2:
+                            break
+                    except Exception as e:
+                        logger.warning(f"Failed to retrieve mapping for {index}: {e}")
+                        return None
+                if denied and len(indices) == 1:
+                    try:
+                        return await read_mapping(indices[0])
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to retrieve mapping for {indices[0]}: {e}"
+                        )
+            return None
 
         parsed_mappings = await asyncio.gather(
             *[

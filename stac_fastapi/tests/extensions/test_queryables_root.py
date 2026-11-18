@@ -236,7 +236,9 @@ async def test_shared_rebuild_reads_the_shared_mapping_once(
     queryables = await database.get_all_collection_queryables()
 
     assert len(get_mapping) == 1
-    assert get_mapping[0]["index"] == SHARED_ITEMS_INDEX
+    assert get_mapping[0]["index"] in {
+        index_alias_by_collection_id(cid) for cid in collection_ids
+    }
     assert len(resolve) == 1
     # One collection-ID scroll, then one enum aggregation per collection.
     assert len(search) == 1 + len(collection_ids)
@@ -324,6 +326,102 @@ async def test_rebuild_skips_a_collection_without_its_alias(
         "platform-1",
         "platform-2",
     ]
+
+
+@pytest.mark.asyncio
+async def test_rebuild_reads_the_next_alias_when_one_is_deleted_mid_rebuild(
+    app_client, txn_client, shared_index_env, test_collection, test_item, monkeypatch
+):
+    collection_ids = await add_collections(app_client, test_collection, test_item)
+    await refresh_indices(txn_client)
+    indices = txn_client.database.client.indices
+    get_mapping = indices.get_mapping
+    requested = []
+
+    async def delete_alias_then_get_mapping(**kwargs):
+        if not requested:
+            await indices.delete_alias(index=SHARED_ITEMS_INDEX, name=kwargs["index"])
+        requested.append(kwargs["index"])
+        return await get_mapping(**kwargs)
+
+    monkeypatch.setattr(indices, "get_mapping", delete_alias_then_get_mapping)
+
+    queryables = await txn_client.database.get_all_collection_queryables()
+
+    assert len(requested) == 2
+    assert len(queryables) == len(collection_ids) - 1
+    for q in queryables:
+        n = q["properties"]["platform"]["enum"][0].removeprefix("platform-")
+        assert f"field_{n}" in q["properties"]
+
+
+def authorization_error(indices):
+    if type(indices).__module__.startswith("opensearchpy"):
+        from opensearchpy.exceptions import AuthorizationException
+
+        return AuthorizationException(403, "security_exception", {})
+    from types import SimpleNamespace
+
+    from elasticsearch.exceptions import AuthorizationException
+
+    return AuthorizationException("security_exception", SimpleNamespace(status=403), {})
+
+
+@pytest.mark.asyncio
+async def test_rebuild_reads_a_sibling_alias_when_one_alias_is_denied(
+    app_client, txn_client, shared_index_env, test_collection, test_item, monkeypatch
+):
+    collection_ids = await add_collections(app_client, test_collection, test_item)
+    await refresh_indices(txn_client)
+    indices = txn_client.database.client.indices
+    get_mapping = indices.get_mapping
+    requested = []
+
+    async def deny_first_alias(**kwargs):
+        requested.append(kwargs["index"])
+        if kwargs["index"] == requested[0]:
+            raise authorization_error(indices)
+        return await get_mapping(**kwargs)
+
+    monkeypatch.setattr(indices, "get_mapping", deny_first_alias)
+
+    queryables = await txn_client.database.get_all_collection_queryables()
+
+    assert len(requested) == 2 and requested[1] != requested[0]
+    assert len(queryables) == len(collection_ids)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "index_readable", [True, False], ids=["index-read", "gives-up"]
+)
+async def test_rebuild_reads_the_index_after_two_denied_aliases(
+    app_client,
+    txn_client,
+    shared_index_env,
+    test_collection,
+    test_item,
+    monkeypatch,
+    index_readable,
+):
+    collection_ids = await add_collections(app_client, test_collection, test_item)
+    await refresh_indices(txn_client)
+    indices = txn_client.database.client.indices
+    get_mapping = indices.get_mapping
+    requested = []
+
+    async def deny_aliases(**kwargs):
+        requested.append(kwargs["index"])
+        if kwargs["index"] == SHARED_ITEMS_INDEX and index_readable:
+            return await get_mapping(**kwargs)
+        raise authorization_error(indices)
+
+    monkeypatch.setattr(indices, "get_mapping", deny_aliases)
+
+    queryables = await txn_client.database.get_all_collection_queryables()
+
+    assert len(requested) == 3 and requested[2] == SHARED_ITEMS_INDEX
+    assert len(queryables) == (len(collection_ids) if index_readable else 0)
 
 
 @pytest.mark.asyncio

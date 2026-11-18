@@ -204,6 +204,28 @@ async def find_item_in_alias(
     return None
 
 
+async def _alias_mget(client: Any, alias: str, doc_id: str) -> list[dict]:
+    resp = await client.mget(
+        body={
+            "docs": [
+                {"_index": index, "_id": doc_id, "_source": False}
+                for index in await _alias_index_names(client, alias)
+            ]
+        }
+    )
+    return resp.get("docs", [])
+
+
+def _lookup_failure(doc_id: str, docs: list[dict]) -> RuntimeError | None:
+    failed = [doc for doc in docs if "error" in doc]
+    if not failed:
+        return None
+    return RuntimeError(
+        f"Lookup of {doc_id} failed in "
+        f"{', '.join(doc.get('_index', '?') for doc in failed)}: {failed[0]['error']}"
+    )
+
+
 async def find_item_indexes_in_alias(client: Any, alias: str, doc_id: str) -> list[str]:
     """Real-time lookup of every concrete index under an alias that holds a document.
 
@@ -221,16 +243,14 @@ async def find_item_indexes_in_alias(client: Any, alias: str, doc_id: str) -> li
 
     Raises:
         The search engine's NotFoundError when no index carries the alias.
+        RuntimeError when the lookup failed for any index, so an unreadable
+            copy is never reported as absent.
     """
-    resp = await client.mget(
-        body={
-            "docs": [
-                {"_index": index, "_id": doc_id, "_source": False}
-                for index in await _alias_index_names(client, alias)
-            ]
-        }
-    )
-    return [doc["_index"] for doc in resp.get("docs", []) if doc.get("found")]
+    docs = await _alias_mget(client, alias, doc_id)
+    failure = _lookup_failure(doc_id, docs)
+    if failure:
+        raise failure
+    return [doc["_index"] for doc in docs if doc.get("found")]
 
 
 async def check_item_exists_in_alias(client: Any, alias: str, doc_id: str) -> bool:
@@ -249,8 +269,15 @@ async def check_item_exists_in_alias(client: Any, alias: str, doc_id: str) -> bo
 
     Raises:
         The search engine's NotFoundError when no index carries the alias.
+        RuntimeError when no index holds the item and the lookup failed for one.
     """
-    return bool(await find_item_indexes_in_alias(client, alias, doc_id))
+    docs = await _alias_mget(client, alias, doc_id)
+    if any(doc.get("found") for doc in docs):
+        return True
+    failure = _lookup_failure(doc_id, docs)
+    if failure:
+        raise failure
+    return False
 
 
 def check_item_exists_in_alias_sync(client: Any, alias: str, doc_id: str) -> bool:

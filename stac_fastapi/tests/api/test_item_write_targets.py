@@ -298,6 +298,35 @@ async def test_delete_of_a_missing_item_in_an_existing_collection_is_404(
     assert (await app_client.delete(url)).status_code == 404
 
 
+@pytest.mark.parametrize(
+    "docs",
+    [
+        [{"_index": "items-b", "_id": "x", "error": {"type": "shard_error"}}],
+        [
+            {"_index": "items-a", "_id": "x", "found": True},
+            {"_index": "items-b", "_id": "x", "error": {"type": "shard_error"}},
+        ],
+    ],
+    ids=["all-error", "found-and-error"],
+)
+async def test_delete_fails_before_any_delete_when_a_lookup_errors(
+    app, app_client, ctx, monkeypatch, docs
+):
+    """An mget error is never read as absent: the DELETE fails instead of answering
+    404 (which a sync client acks as already gone) or deleting only some copies."""
+    monkeypatch.setenv("ENABLE_REDIS_QUEUE", "false")
+    # Patch the class: undoing an instance patch leaves a bound method behind,
+    # which would shadow later tests' class-level patches.
+    client = type(app.state.database_logic.client)
+    monkeypatch.setattr(client, "mget", AsyncMock(return_value={"docs": docs}))
+    delete = AsyncMock()
+    monkeypatch.setattr(client, "delete", delete)
+    url = f"/collections/{ctx.collection['id']}/items/{ctx.item['id']}"
+    with pytest.raises(RuntimeError, match="items-b"):
+        await app_client.delete(url)
+    delete.assert_not_awaited()
+
+
 @pytest.mark.parametrize("validator", ["false", "true"])
 @pytest.mark.parametrize("format", ["merge", "json"])
 @pytest.mark.parametrize("unhide", ["put", "patch"])

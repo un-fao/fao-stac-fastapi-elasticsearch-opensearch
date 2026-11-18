@@ -8,6 +8,7 @@ import pytest
 from stac_fastapi.sfeos_helpers.database import (
     check_item_exists_in_alias,
     check_item_exists_in_alias_sync,
+    find_item_indexes_in_alias,
     index_alias_by_collection_id,
     mk_item_id,
 )
@@ -151,3 +152,36 @@ async def test_check_item_exists_with_different_datetime(
     assert (
         check_item_exists_in_alias_sync(database.sync_client, alias, doc_id_2) is True
     )
+
+
+class _MixedLookupClient:
+    """Two indexes under the alias: one holds the item, the other errors."""
+
+    class indices:
+        @staticmethod
+        async def get_alias(name):
+            return {"items-a": {}, "items-b": {}}
+
+    def __init__(self, found=True):
+        self.found = found
+
+    async def mget(self, body):
+        return {
+            "docs": [
+                {"_index": "items-a", "_id": "x", "found": self.found},
+                {"_index": "items-b", "_id": "x", "error": {"type": "shard_error"}},
+            ]
+        }
+
+
+@pytest.mark.asyncio
+async def test_find_item_indexes_in_alias_raises_when_an_index_lookup_fails():
+    with pytest.raises(RuntimeError, match="items-b"):
+        await find_item_indexes_in_alias(_MixedLookupClient(), "alias", "x")
+
+
+@pytest.mark.asyncio
+async def test_check_item_exists_trusts_a_hit_and_raises_on_an_error_without_one():
+    assert await check_item_exists_in_alias(_MixedLookupClient(), "alias", "x") is True
+    with pytest.raises(RuntimeError, match="items-b"):
+        await check_item_exists_in_alias(_MixedLookupClient(found=False), "alias", "x")
