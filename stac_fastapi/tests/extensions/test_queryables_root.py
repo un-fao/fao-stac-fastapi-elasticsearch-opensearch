@@ -411,6 +411,41 @@ async def test_rebuild_reads_the_next_alias_when_one_is_forbidden(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "index_readable", [True, False], ids=["index-read", "gives-up"]
+)
+async def test_rebuild_reads_the_index_after_two_forbidden_aliases(
+    app_client,
+    txn_client,
+    shared_index_env,
+    test_collection,
+    test_item,
+    monkeypatch,
+    index_readable,
+):
+    collection_ids = await add_collections(app_client, test_collection, test_item, 5)
+    await refresh_indices(txn_client)
+    indices = txn_client.database.client.indices
+    get_mapping = indices.get_mapping
+    requested = []
+
+    async def forbid_aliases(**kwargs):
+        requested.append(kwargs["index"])
+        if kwargs["index"] == SHARED_ITEMS_INDEX and index_readable:
+            return await get_mapping(**kwargs)
+        raise forbidden_error()
+
+    monkeypatch.setattr(indices, "get_mapping", forbid_aliases)
+
+    queryables = await txn_client.database.get_all_collection_queryables()
+
+    # A key denied everywhere costs three requests, not one per collection.
+    assert requested[2:] == [SHARED_ITEMS_INDEX] and len(requested) == 3
+    expected = platforms_except(collection_ids, None) if index_readable else []
+    assert platforms(queryables) == expected
+
+
+@pytest.mark.asyncio
 async def test_rebuild_reads_a_multi_index_alias_by_its_name(
     app_client, txn_client, test_collection, test_item, monkeypatch
 ):

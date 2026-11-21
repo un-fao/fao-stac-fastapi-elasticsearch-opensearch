@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 ### Fixed
 
 - The landing page and collections now advertise `http://www.opengis.net/def/rel/ogc/1.0/queryables`. Clients following this relation from a catalog-scoped collection reach `/collections/{collection_id}/queryables`. Previously, clients looking for the OGC relation could fall back to a catalog-scoped URL that returned `404`. The short `queryables` relation is deprecated and still points to the same endpoint. [#1034](https://github.com/stac-utils/stac-fastapi-elasticsearch-opensearch/issues/1034)
+- `DELETE /collections/{collection_id}/items/{item_id}` without `If-Match`, with `REQUIRE_IF_MATCH` off, fails when the real-time lookup reports an error for any index, instead of reading that copy as absent. An error on every index used to answer `404`, which a sync client acks as already deleted, and an error on one of several copies deleted only the others. The real-time existence check still reports an item as present when any index holds it.
+- With `ROOT_QUERYABLES_UNION=true`, a second `403` on the aliases of one index ends that group's mapping reads, so a key denied on every alias costs at most three requests per group instead of one per collection. A group backed by a single index then reads that index by name, as before alias reads, and its collections are kept when that succeeds.
 
 ## [v8.3.0] - 2026-11-20
 

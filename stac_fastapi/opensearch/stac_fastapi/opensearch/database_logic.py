@@ -625,12 +625,17 @@ class DatabaseLogic(BaseDatabaseLogic):
                 )
 
         async def parse_mapping_safely(
-            cids: list[str],
+            indices: tuple[str, ...], cids: list[str]
         ) -> tuple[list[str], tuple | None]:
             # Read through an alias: credentials may grant metadata access on
             # aliases only, and an alias is shorter than many partition names.
             # Collections whose alias failed before the read are left out.
+            # A second denial ends the walk, so a key denied on every alias costs
+            # at most three requests per group rather than one per collection;
+            # a group backed by one index then reads it by name, as before.
             async with sem:
+                denied = 0
+                gone = set()
                 for i, cid in enumerate(cids):
                     index = aliases[cid]
                     try:
@@ -638,17 +643,35 @@ class DatabaseLogic(BaseDatabaseLogic):
                         return cids[i:], filters_client.queryables_from_mapping(mapping)
                     except OSNotFoundError:
                         # Its collection was deleted after the aliases resolved.
+                        gone.add(cid)
                         continue
                     except AuthorizationException as e:
                         logger.warning(f"Failed to retrieve mapping for {index}: {e}")
+                        denied += 1
+                        if denied == 2:
+                            break
                         continue
                     except Exception as e:
                         logger.warning(f"Failed to retrieve mapping for {index}: {e}")
                         return [], None
+                if denied and len(indices) == 1:
+                    try:
+                        mapping = await self.client.indices.get_mapping(
+                            index=indices[0]
+                        )
+                        kept = [cid for cid in cids if cid not in gone]
+                        return kept, filters_client.queryables_from_mapping(mapping)
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to retrieve mapping for {indices[0]}: {e}"
+                        )
             return [], None
 
         parsed_mappings = await asyncio.gather(
-            *[parse_mapping_safely(cids) for cids in collections_by_indices.values()]
+            *[
+                parse_mapping_safely(indices, cids)
+                for indices, cids in collections_by_indices.items()
+            ]
         )
         parsed_by_collection = {
             cid: parsed for cids, parsed in parsed_mappings if parsed for cid in cids
